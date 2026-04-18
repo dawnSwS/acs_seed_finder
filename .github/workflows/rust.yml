@@ -1,0 +1,26 @@
+name: Rust CI
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+    
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Upload executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: acs_seed_finder-windows-exe
+        path: target/release/acs_seed_finder.exe
