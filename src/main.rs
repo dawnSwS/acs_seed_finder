@@ -12,6 +12,6 @@ fn main() -> eframe::Result<()> {
             fonts.families.values_mut().for_each(|f| f.insert(0, "cjk".into()));
             cc.egui_ctx.set_fonts(fonts);
         }
-        Ok(Box::new(app::SeedFinderApp::default()))
+        Box::new(app::SeedFinderApp::default())
     }))
 }
