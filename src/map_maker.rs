@@ -297,8 +297,10 @@ impl MapMaker {
             {
                 let (left, right) = self.bb.split_at_mut(18);
                 let layer = &left[def_u];
-                let buf18 = &mut right[0];
-                let buf19 = &right[1]; 
+                
+                let (r18, r19) = right.split_at_mut(1);
+                let buf18 = &mut r18[0];
+                let buf19 = &r19[0];
 
                 for y in 0..height {
                     let row_offset = y * stride;
