@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use crate::rng::{GMathUtl, RandomType};
 
@@ -73,15 +73,6 @@ impl ShadowPipeline {
                 self.bb[t][w] |= newly_added;
             } else {
                 self.bb[t][w] &= !newly_added;
-            }
-        }
-    }
-    
-    fn apply_readback(&mut self, target: usize, diff_mask: &[u32]) {
-        for w in 0..1152 {
-            let newly_added = diff_mask[w];
-            if newly_added != 0 {
-                self.apply_readback_word(target, w, newly_added);
             }
         }
     }
@@ -378,11 +369,29 @@ struct GpuBuffers {
 }
 
 pub fn scan_seeds_heterogeneous(start: i32, end: i32, _map_size: i32, threshold: usize, progress: Arc<AtomicUsize>) -> Vec<(i32, usize)> {
-    pollster::block_on(run_dma_pipeline(start, end, threshold, progress))
+    let seed_counter = Arc::new(AtomicI64::new(start as i64));
+    
+    let pure_gpu_thread = {
+        let seed_counter = seed_counter.clone();
+        let progress = progress.clone();
+        std::thread::spawn(move || {
+            crate::gpu_scanner::run_pure_gpu_dynamic(seed_counter, end, threshold, progress)
+        })
+    };
+    
+    let mut hetero_results = pollster::block_on(run_dma_pipeline(seed_counter, end, threshold, progress));
+    
+    let mut pure_results = pure_gpu_thread.join().unwrap();
+    
+    hetero_results.append(&mut pure_results);
+    hetero_results.sort_by(|a, b| b.1.cmp(&a.1));
+    hetero_results
 }
 
-async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<AtomicUsize>) -> Vec<(i32, usize)> {
-    let total = (end as i64 - start as i64 + 1).max(0) as u32; if total == 0 { return vec![]; }
+async fn run_dma_pipeline(seed_counter: Arc<AtomicI64>, end: i32, threshold: usize, progress: Arc<AtomicUsize>) -> Vec<(i32, usize)> {
+    let initial_start = seed_counter.load(Ordering::Relaxed);
+    let total = (end as i64 - initial_start + 1).max(0) as u32; 
+    if total == 0 { return vec![]; }
     
     let instance = wgpu::Instance::default();
     let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }).await.unwrap();
@@ -437,11 +446,15 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
     }
     
     let buf_rx = std::sync::Mutex::new(buf_rx);
-    let chunks: Vec<_> = (start..=end).step_by(batch).collect();
     
-    let mut all_results: Vec<(i32, usize)> = chunks.into_par_iter().flat_map(|current_start| {
-        let diff = ((end as i64 - current_start as i64 + 1) as usize).min(batch);
-        let mut engines: Vec<_> = (0..diff).map(|i| ShadowPipeline::new((current_start as i64 + i as i64) as i32)).collect();
+    let iter = std::iter::from_fn(|| {
+        let s = seed_counter.fetch_add(batch as i64, Ordering::Relaxed);
+        if s <= end as i64 { Some(s) } else { None }
+    });
+
+    let mut all_results: Vec<(i32, usize)> = iter.par_bridge().flat_map(|current_start| {
+        let diff = ((end as i64 - current_start + 1) as usize).min(batch);
+        let mut engines: Vec<_> = (0..diff).map(|i| ShadowPipeline::new((current_start + i as i64) as i32)).collect();
         
         let buffers = buf_rx.lock().unwrap().recv().unwrap();
         
@@ -519,7 +532,6 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
             }
         };
 
-        // CPU 执行绘制与生成逻辑
         for e in engines.iter_mut() { e.step_1_cpu(); }
         
         for e in engines.iter_mut() {
@@ -527,7 +539,6 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
             e.cpu_out_line(T_FERTILE_SOIL, T_FERTILE_SOIL, 5, 20, 0, CType::AllTrue);
         }
         
-        // 保留有效的 GPU 修图算力
         run_opt(&mut engines, T_FERTILE_SOIL, 2, 4, 1, CType::AllTrue);
         
         for e in engines.iter_mut() { e.step_2_cpu_a(); }
@@ -536,13 +547,11 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
             e.step_2_cpu_b();
             e.cpu_random_and_expand(T_FERTILE_SOIL, 20, 4, 30, CType::AllTrue, CType::AllTrue);
         }
-        // 已删除 T_FERTILE_SOIL 的无用平滑: min 5, max 3
 
         let ss = 3;
         for e in engines.iter_mut() {
             e.cpu_random_and_expand(T_D_DEPTH_WATER, ss as i32 - 1, 2 * ss as i32 - 1, 13 + 6 * ss as i32, CType::NoBorn, CType::NoBorn);
         }
-        // 已删除 T_D_DEPTH_WATER 的无用平滑: min 5, max 3
 
         for e in engines.iter_mut() {
             e.cpu_out_line(T_D_DEPTH_WATER, T_DEPTH_WATER, 1, 100, 0, CType::CheckCon);
@@ -554,7 +563,6 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
         for e in engines.iter_mut() {
             e.cpu_random_and_expand(T_SHALLOW_WATER, 3, 3, 20, CType::NoBorn, CType::NoBorn);
         }
-        // 已删除 T_SHALLOW_WATER 的无用平滑: min 5, max 3
 
         for e in engines.iter_mut() {
             e.cpu_out_line(T_SHALLOW_WATER, T_MUD, 4, 90, 0, CType::CheckCon);
@@ -616,7 +624,6 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
         run_opt(&mut engines, T_STONE_LAND, 2, 9, 1, CType::CheckCon);
 
         for e in engines.iter_mut() { e.cpu_random_and_expand(T_LING_SOIL, 3, 6, 33, CType::CheckCon, CType::CheckCon); }
-        // 已删除 T_LING_SOIL 的无用平滑: min 5, max 3
 
         for (i, e) in engines.iter().enumerate() { b_layer[i*1152..(i+1)*1152].copy_from_slice(&e.bb[T_LING_SOIL]); }
         queue.write_buffer(&buffers.gpu_layer, 0, bytemuck::cast_slice(&b_layer));
@@ -625,7 +632,7 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
         
         let mut batch_results = Vec::new();
         for i in 0..diff {
-            if scores[i] as usize >= threshold { batch_results.push(((current_start as i64 + i as i64) as i32, scores[i] as usize)); }
+            if scores[i] as usize >= threshold { batch_results.push(((current_start + i as i64) as i32, scores[i] as usize)); }
         }
         
         progress.fetch_add(diff, Ordering::Relaxed);
@@ -634,6 +641,5 @@ async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<
     }).collect();
     
     let _ = stop_tx.send(());
-    all_results.sort_by(|a, b| b.1.cmp(&a.1)); 
     all_results
 }
