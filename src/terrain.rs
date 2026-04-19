@@ -1,20 +1,6 @@
-#[repr(i32)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(i32)] #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Terrain {
-    Null = 0, 
-    Soil = 1, 
-    DepthWater = 2, 
-    DDepthWater = 3, 
-    ShallowWater = 4, 
-    Mud = 5, 
-    FertileSoil = 6,
-    LingSoil = 7, 
-    WetLand = 8, 
-    StoneLand = 9, 
-    RockBrown = 10, 
-    RockGray = 11, 
-    RockMarble = 12,
-    IronOre = 13, 
-    CopperOre = 14, 
-    SilverOre = 15,
+    Null=0, Soil=1, DepthWater=2, DDepthWater=3, ShallowWater=4, Mud=5, FertileSoil=6,
+    LingSoil=7, WetLand=8, StoneLand=9, RockBrown=10, RockGray=11, RockMarble=12,
+    IronOre=13, CopperOre=14, SilverOre=15,
 }
