@@ -136,8 +136,8 @@ impl MapMaker {
             }
         };
         let stride = ((self.width + 31) / 32) as usize;
-        let rem = self.width % 32;
-        if rem != 0 && (w % stride) == stride - 1 { base &= (1 << rem) - 1; }
+        let rem = (self.width as u32) % 32;
+        if rem != 0 && (w % stride) == stride - 1 { base &= (1u32 << rem) - 1; }
         base
     }
 
@@ -173,12 +173,12 @@ impl MapMaker {
     fn fill(&mut self, def: Terrain) {
         let def_u = get_t_idx(def);
         let stride = ((self.width + 31) / 32) as usize;
-        let rem = self.width % 32;
+        let rem = (self.width as u32) % 32;
         for t in 1..=15 {
             if t == def_u {
                 for w in 0..self.bb[t].len() {
                     let xw = w % stride;
-                    if rem != 0 && xw == stride - 1 { self.bb[t][w] = (1 << rem) - 1; } 
+                    if rem != 0 && xw == stride - 1 { self.bb[t][w] = (1u32 << rem) - 1; } 
                     else { self.bb[t][w] = 0xFFFFFFFF; }
                 }
             } else {
@@ -194,7 +194,7 @@ impl MapMaker {
         if key >= 0 && key < self.width * self.height {
             let stride = ((self.width + 31) / 32) as usize;
             let nw = (y as usize) * stride + (x as usize) / 32;
-            self.set_mask(get_t_idx(def), nw, 1 << (x % 32));
+            self.set_mask(get_t_idx(def), nw, 1u32 << ((x as u32) % 32));
         }
         key
     }
@@ -227,10 +227,12 @@ impl MapMaker {
             if n_count > 0 { key = v_keys[self.rand.random_range_int(0, n_count as i32, RandomType::EmNone, "MakeMap") as usize]; }
             
             if key >= 0 && key < self.width * self.height {
-                let key_x = key % self.width; let key_y = key / self.width;
-                let nw = (key_y as usize) * stride + (key_x as usize) / 32;
-                let nbit = 1 << (key_x % 32);
-                if (self.get_ctype_mask(nw, ctype) & nbit) != 0 { self.set_mask(def_u, nw, nbit); }
+                let key_x = (key % self.width) as usize; 
+                let key_y = (key / self.width) as usize;
+                let nw = key_y * stride + key_x / 32;
+                let nbit = 1u32 << ((key_x as u32) % 32);
+                let mask = self.get_ctype_mask(nw, ctype);
+                if (mask & nbit) != 0 { self.set_mask(def_u, nw, nbit); }
             }
         }
         self.out_line(def, def, w, 4, 0, ctype);
@@ -238,7 +240,11 @@ impl MapMaker {
 
     fn out_line(&mut self, src: Terrain, t_target: Terrain, w: i32, lv: i32, maxcount: i32, ctype: CType) {
         let src_u = get_t_idx(src); let target_u = get_t_idx(t_target);
-        self.bb[18].copy_from_slice(&self.bb[src_u]);
+        
+        {
+            let (lower_bb, upper_bb) = self.bb.split_at_mut(18);
+            upper_bb[0].copy_from_slice(&lower_bb[src_u]); 
+        }
         
         let limit = ((w * 2 + 1) * (w * 2 + 1)) as usize;
         let base_around_50 = get_base_around_50();
@@ -250,7 +256,7 @@ impl MapMaker {
             let mut mask = self.bb[18][word];
             if word == 0 { mask &= !1; }
             while mask != 0 {
-                let bit = 31 - mask.leading_zeros(); mask ^= 1 << bit;
+                let bit = 31 - mask.leading_zeros(); mask ^= 1u32 << bit;
                 let cx = ((word % stride) * 32 + bit as usize) as i32;
                 let cy = (word / stride) as i32;
                 if cx >= self.width { continue; }
@@ -263,8 +269,9 @@ impl MapMaker {
                         if nx == 0 && ny == 0 { continue; }
                         if self.rand.random_range_int(0, 100, RandomType::EmNone, "OutLine") > lv { continue; }
                         let nw = (ny as usize) * stride + (nx as usize) / 32;
-                        let n_bit = 1 << (nx % 32);
-                        if (self.get_ctype_mask(nw, ctype) & n_bit) != 0 {
+                        let n_bit = 1u32 << ((nx as u32) % 32);
+                        let cmask = self.get_ctype_mask(nw, ctype);
+                        if (cmask & n_bit) != 0 {
                             self.set_mask(target_u, nw, n_bit);
                             current_max -= 1;
                             if current_max == 0 { return; } 
@@ -282,62 +289,75 @@ impl MapMaker {
         let total_words = stride * height;
         
         for _ in 0..maxcount {
-            for w in 0..total_words { self.bb[19][w] = self.get_ctype_mask(w, ctype); }
+            for w in 0..total_words {
+                let mask = self.get_ctype_mask(w, ctype);
+                self.bb[19][w] = mask;
+            }
             
-            for y in 0..height {
-                let row_offset = y * stride;
-                let up_offset = if y > 0 { (y - 1) * stride } else { row_offset };
-                let dn_offset = if y < height - 1 { (y + 1) * stride } else { row_offset };
-                
-                for xw in 0..stride {
-                    let w = row_offset + xw;
-                    let valid_mask = self.bb[19][w];
-                    if valid_mask == 0 { self.bb[18][w] = 0; continue; }
-                    
-                    let fetch_row = |offset: usize, is_up: bool| -> (u32, u32, u32) {
-                        let mut c = self.bb[def_u][offset + xw];
-                        if is_up && y == 1 && xw == 0 { c &= 0xFFFFFFFE; }
-                        let c_prev = if xw > 0 { self.bb[def_u][offset + xw - 1] } else { 0 };
-                        let c_next = if xw < stride - 1 { self.bb[def_u][offset + xw + 1] } else { 0 };
-                        let l = (c << 1) | (c_prev >> 31);
-                        let r = (c >> 1) | (c_next << 31);
-                        (l, c, r)
-                    };
-                    
-                    let (mid_l, _, mid_r) = fetch_row(row_offset, false);
-                    let (up_l, up_c, up_r) = if y > 0 { fetch_row(up_offset, true) } else { (0, 0, 0) };
-                    let (dn_l, dn_c, dn_r) = if y < height - 1 { fetch_row(dn_offset, false) } else { (0, 0, 0) };
-                    
-                    macro_rules! ha { ($a:expr, $b:expr) => { ($a ^ $b, $a & $b) } }
-                    macro_rules! fa { ($a:expr, $b:expr, $c:expr) => { { let t = $a ^ $b; (t ^ $c, ($a & $b) | (t & $c)) } } }
-                    
-                    let (s0_0, c1_0) = ha!(mid_l, mid_r);
-                    let (s0_1, c1_1) = fa!(up_l, up_c, up_r);
-                    let (s0_2, c1_2) = fa!(dn_l, dn_c, dn_r);
+            {
+                let (left, right) = self.bb.split_at_mut(18);
+                let layer = &left[def_u];
+                let buf18 = &mut right[0];
+                let buf19 = &right[1]; 
 
-                    let (s0_01, c1_01) = fa!(s0_0, s0_1, s0_2);
-                    let (s1_0, c2_0) = fa!(c1_0, c1_1, c1_2);
-                    let (s1_1, c2_1) = ha!(s1_0, c1_01);
-                    let (s2_0, c3_0) = ha!(c2_0, c2_1);
+                for y in 0..height {
+                    let row_offset = y * stride;
+                    let up_offset = if y > 0 { (y - 1) * stride } else { row_offset };
+                    let dn_offset = if y < height - 1 { (y + 1) * stride } else { row_offset };
                     
-                    let (bit0, bit1, bit2, bit3) = (s0_01, s1_1, s2_0, c3_0);
-                    
-                    let match_mask = if opt_min == 2 && opt_max == 4 {
-                        (!bit3 & !bit2 & bit1) | (!bit3 & bit2 & !bit1 & !bit0)
-                    } else if opt_min == 2 && opt_max == 6 {
-                        (!bit3 & !bit2 & bit1) | (!bit3 & bit2 & !bit1) | (!bit3 & bit2 & bit1 & !bit0)
-                    } else if opt_min == 2 && (opt_max == 8 || opt_max == 9) {
-                        bit3 | bit2 | bit1
-                    } else {
-                        let mut m = 0;
-                        for bit in 0..32 {
-                            let count = ((bit3 >> bit) & 1) * 8 + ((bit2 >> bit) & 1) * 4 + ((bit1 >> bit) & 1) * 2 + ((bit0 >> bit) & 1);
-                            if count >= opt_min as u32 && count <= opt_max as u32 { m |= 1 << bit; }
-                        } m
-                    };
-                    self.bb[18][w] = match_mask & valid_mask;
+                    for xw in 0..stride {
+                        let w = row_offset + xw;
+                        let valid_mask = buf19[w];
+                        if valid_mask == 0 { buf18[w] = 0; continue; }
+                        
+                        macro_rules! fetch_row {
+                            ($offset:expr, $is_up:expr) => {{
+                                let mut c = layer[$offset + xw];
+                                if $is_up && y == 1 && xw == 0 { c &= 0xFFFFFFFE; }
+                                let c_prev = if xw > 0 { layer[$offset + xw - 1] } else { 0 };
+                                let c_next = if xw < stride - 1 { layer[$offset + xw + 1] } else { 0 };
+                                let l = (c << 1) | (c_prev >> 31);
+                                let r = (c >> 1) | (c_next << 31);
+                                (l, c, r)
+                            }}
+                        }
+                        
+                        let (mid_l, _, mid_r) = fetch_row!(row_offset, false);
+                        let (up_l, up_c, up_r) = if y > 0 { fetch_row!(up_offset, true) } else { (0, 0, 0) };
+                        let (dn_l, dn_c, dn_r) = if y < height - 1 { fetch_row!(dn_offset, false) } else { (0, 0, 0) };
+                        
+                        macro_rules! ha { ($a:expr, $b:expr) => { ($a ^ $b, $a & $b) } }
+                        macro_rules! fa { ($a:expr, $b:expr, $c:expr) => { { let t = $a ^ $b; (t ^ $c, ($a & $b) | (t & $c)) } } }
+                        
+                        let (s0_0, c1_0) = ha!(mid_l, mid_r);
+                        let (s0_1, c1_1) = fa!(up_l, up_c, up_r);
+                        let (s0_2, c1_2) = fa!(dn_l, dn_c, dn_r);
+
+                        let (s0_01, c1_01) = fa!(s0_0, s0_1, s0_2);
+                        let (s1_0, c2_0) = fa!(c1_0, c1_1, c1_2);
+                        let (s1_1, c2_1) = ha!(s1_0, c1_01);
+                        let (s2_0, c3_0) = ha!(c2_0, c2_1);
+                        
+                        let (bit0, bit1, bit2, bit3) = (s0_01, s1_1, s2_0, c3_0);
+                        
+                        let match_mask = if opt_min == 2 && opt_max == 4 {
+                            (!bit3 & !bit2 & bit1) | (!bit3 & bit2 & !bit1 & !bit0)
+                        } else if opt_min == 2 && opt_max == 6 {
+                            (!bit3 & !bit2 & bit1) | (!bit3 & bit2 & !bit1) | (!bit3 & bit2 & bit1 & !bit0)
+                        } else if opt_min == 2 && (opt_max == 8 || opt_max == 9) {
+                            bit3 | bit2 | bit1
+                        } else {
+                            let mut m = 0;
+                            for bit in 0..32 {
+                                let count = ((bit3 >> bit) & 1) * 8 + ((bit2 >> bit) & 1) * 4 + ((bit1 >> bit) & 1) * 2 + ((bit0 >> bit) & 1);
+                                if count >= opt_min as u32 && count <= opt_max as u32 { m |= 1u32 << bit; }
+                            } m
+                        };
+                        buf18[w] = match_mask & valid_mask;
+                    }
                 }
             }
+
             for w in 0..total_words {
                 let diff = self.bb[18][w] & !self.bb[def_u][w];
                 if diff != 0 { self.set_mask(def_u, w, diff); }
@@ -357,8 +377,9 @@ impl MapMaker {
             let key = self.p2key_safe(x, y);
             if key >= 0 && key < self.width * self.height {
                 let nw = (y as usize) * stride + (x as usize) / 32;
-                let nbit = 1 << (x % 32);
-                if (self.get_ctype_mask(nw, ctype) & nbit) != 0 { self.set_mask(def_u, nw, nbit); }
+                let nbit = 1u32 << ((x as u32) % 32);
+                let cmask = self.get_ctype_mask(nw, ctype);
+                if (cmask & nbit) != 0 { self.set_mask(def_u, nw, nbit); }
             }
         }
         
@@ -368,16 +389,17 @@ impl MapMaker {
                 for w in 0..total_words {
                     let mut mask = self.bb[def_u][w];
                     while mask != 0 {
-                        let b = mask.trailing_zeros(); mask ^= 1 << b;
+                        let b = mask.trailing_zeros(); mask ^= 1u32 << b;
                         let cx = (w % stride * 32 + b as usize) as i32;
                         if cx < self.width {
-                            let key = (w / stride) as i32 * self.width + cx;
+                            let key = ((w / stride) as i32) * self.width + cx;
                             if self.rand.random_range_int(0, 100, RandomType::EmNone, "MakeMap") <= expand_lv {
                                 let mut n_keys = [0i32; 8];
                                 for d in 0..self.get_cpu_neighbor(key, &mut n_keys) {
                                     let nx = (n_keys[d] % self.width) as usize; let ny = (n_keys[d] / self.width) as usize;
-                                    let nw = ny * stride + nx / 32; let n_bit = 1 << (nx % 32);
-                                    if (self.get_ctype_mask(nw, ectype) & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
+                                    let nw = ny * stride + nx / 32; let n_bit = 1u32 << ((nx as u32) % 32);
+                                    let cmask = self.get_ctype_mask(nw, ectype);
+                                    if (cmask & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
                                 }
                             }
                         }
@@ -387,16 +409,17 @@ impl MapMaker {
                 for w in (0..total_words).rev() {
                     let mut mask = self.bb[def_u][w];
                     while mask != 0 {
-                        let b = 31 - mask.leading_zeros(); mask ^= 1 << b;
+                        let b = 31 - mask.leading_zeros(); mask ^= 1u32 << b;
                         let cx = (w % stride * 32 + b as usize) as i32;
                         if cx < self.width {
-                            let key = (w / stride) as i32 * self.width + cx;
+                            let key = ((w / stride) as i32) * self.width + cx;
                             if self.rand.random_range_int(0, 100, RandomType::EmNone, "MakeMap") <= expand_lv {
                                 let mut n_keys = [0i32; 8];
                                 for d in 0..self.get_cpu_neighbor(key, &mut n_keys) {
                                     let nx = (n_keys[d] % self.width) as usize; let ny = (n_keys[d] / self.width) as usize;
-                                    let nw = ny * stride + nx / 32; let n_bit = 1 << (nx % 32);
-                                    if (self.get_ctype_mask(nw, ectype) & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
+                                    let nw = ny * stride + nx / 32; let n_bit = 1u32 << ((nx as u32) % 32);
+                                    let cmask = self.get_ctype_mask(nw, ectype);
+                                    if (cmask & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
                                 }
                             }
                         }
@@ -418,7 +441,7 @@ impl MapMaker {
             for x in 0..(self.width as usize) {
                 let key = y * (self.width as usize) + x;
                 let w = y * stride + x / 32;
-                let bit = 1 << (x % 32);
+                let bit = 1u32 << ((x as u32) % 32);
                 
                 if (self.bb[T_LING_SOIL][w] & bit) != 0 { self.grid[key] = Terrain::LingSoil; continue; }
                 if (self.bb[T_STONE_LAND][w] & bit) != 0 { self.grid[key] = Terrain::StoneLand; continue; }
@@ -440,15 +463,15 @@ impl MapMaker {
         for w in 0..(stride * self.height as usize) {
             let mut m = self.bb[16][w];
             while m != 0 {
-                let b = m.trailing_zeros(); m ^= 1 << b;
+                let b = m.trailing_zeros(); m ^= 1u32 << b;
                 let cx = w % stride * 32 + b as usize;
-                if cx < self.width as usize { self.born_space[w / stride * self.width as usize + cx] = true; }
+                if cx < self.width as usize { self.born_space[(w / stride) * self.width as usize + cx] = true; }
             }
             let mut m_line = self.bb[17][w];
             while m_line != 0 {
-                let b = m_line.trailing_zeros(); m_line ^= 1 << b;
+                let b = m_line.trailing_zeros(); m_line ^= 1u32 << b;
                 let cx = w % stride * 32 + b as usize;
-                if cx < self.width as usize { self.cache_born_line[w / stride * self.width as usize + cx] = true; }
+                if cx < self.width as usize { self.cache_born_line[(w / stride) * self.width as usize + cx] = true; }
             }
         }
     }
@@ -495,8 +518,10 @@ impl MapMaker {
                     _ => self.p2key_safe(num2 + j, self.width - 1),
                 };
                 if k >= 0 {
-                    let nw = (k / self.width as i32 as usize) * stride + (k % self.width as i32 as usize) / 32;
-                    self.bb[17][nw] |= 1 << (k % 32);
+                    let k_u = k as usize;
+                    let w_u = self.width as usize;
+                    let nw = (k_u / w_u) * stride + (k_u % w_u) / 32;
+                    self.bb[17][nw] |= 1u32 << ((k_u as u32) % 32);
                 } j += 1;
             }
         }
