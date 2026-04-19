@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-mod app; mod gpu_scanner; mod hetero_scanner; mod map_maker; mod rng; mod scanner; mod terrain;
+mod app; mod gpu_scanner; mod hetero_scanner; mod map_maker; mod rng; mod scanner; mod terrain; mod sect_npc_scanner;
 
 fn main() -> eframe::Result<()> {
     eframe::run_native("了不起的修仙模拟器 - 极品种子扫描仪",
         eframe::NativeOptions {
-            viewport: eframe::egui::ViewportBuilder::default().with_inner_size([720.0, 600.0]).with_min_inner_size([500.0, 480.0]),
+            viewport: eframe::egui::ViewportBuilder::default().with_inner_size([800.0, 650.0]).with_min_inner_size([600.0, 500.0]),
             ..Default::default()
         },
         Box::new(|cc| {
