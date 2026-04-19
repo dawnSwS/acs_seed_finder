@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use crate::rng::{GMathUtl, RandomType};
 
@@ -73,6 +73,15 @@ impl ShadowPipeline {
                 self.bb[t][w] |= newly_added;
             } else {
                 self.bb[t][w] &= !newly_added;
+            }
+        }
+    }
+    
+    fn apply_readback(&mut self, target: usize, diff_mask: &[u32]) {
+        for w in 0..1152 {
+            let newly_added = diff_mask[w];
+            if newly_added != 0 {
+                self.apply_readback_word(target, w, newly_added);
             }
         }
     }
@@ -369,29 +378,11 @@ struct GpuBuffers {
 }
 
 pub fn scan_seeds_heterogeneous(start: i32, end: i32, _map_size: i32, threshold: usize, progress: Arc<AtomicUsize>) -> Vec<(i32, usize)> {
-    let seed_counter = Arc::new(AtomicI64::new(start as i64));
-    
-    let pure_gpu_thread = {
-        let seed_counter = seed_counter.clone();
-        let progress = progress.clone();
-        std::thread::spawn(move || {
-            crate::gpu_scanner::run_pure_gpu_dynamic(seed_counter, end, threshold, progress)
-        })
-    };
-    
-    let mut hetero_results = pollster::block_on(run_dma_pipeline(seed_counter, end, threshold, progress));
-    
-    let mut pure_results = pure_gpu_thread.join().unwrap();
-    
-    hetero_results.append(&mut pure_results);
-    hetero_results.sort_by(|a, b| b.1.cmp(&a.1));
-    hetero_results
+    pollster::block_on(run_dma_pipeline(start, end, threshold, progress))
 }
 
-async fn run_dma_pipeline(seed_counter: Arc<AtomicI64>, end: i32, threshold: usize, progress: Arc<AtomicUsize>) -> Vec<(i32, usize)> {
-    let initial_start = seed_counter.load(Ordering::Relaxed);
-    let total = (end as i64 - initial_start + 1).max(0) as u32; 
-    if total == 0 { return vec![]; }
+async fn run_dma_pipeline(start: i32, end: i32, threshold: usize, progress: Arc<AtomicUsize>) -> Vec<(i32, usize)> {
+    let total = (end as i64 - start as i64 + 1).max(0) as u32; if total == 0 { return vec![]; }
     
     let instance = wgpu::Instance::default();
     let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { power_preference: wgpu::PowerPreference::HighPerformance, ..Default::default() }).await.unwrap();
@@ -446,15 +437,11 @@ async fn run_dma_pipeline(seed_counter: Arc<AtomicI64>, end: i32, threshold: usi
     }
     
     let buf_rx = std::sync::Mutex::new(buf_rx);
+    let chunks: Vec<_> = (start..=end).step_by(batch).collect();
     
-    let iter = std::iter::from_fn(|| {
-        let s = seed_counter.fetch_add(batch as i64, Ordering::Relaxed);
-        if s <= end as i64 { Some(s) } else { None }
-    });
-
-    let mut all_results: Vec<(i32, usize)> = iter.par_bridge().flat_map(|current_start| {
-        let diff = ((end as i64 - current_start + 1) as usize).min(batch);
-        let mut engines: Vec<_> = (0..diff).map(|i| ShadowPipeline::new((current_start + i as i64) as i32)).collect();
+    let mut all_results: Vec<(i32, usize)> = chunks.into_par_iter().flat_map(|current_start| {
+        let diff = ((end as i64 - current_start as i64 + 1) as usize).min(batch);
+        let mut engines: Vec<_> = (0..diff).map(|i| ShadowPipeline::new((current_start as i64 + i as i64) as i32)).collect();
         
         let buffers = buf_rx.lock().unwrap().recv().unwrap();
         
@@ -632,7 +619,7 @@ async fn run_dma_pipeline(seed_counter: Arc<AtomicI64>, end: i32, threshold: usi
         
         let mut batch_results = Vec::new();
         for i in 0..diff {
-            if scores[i] as usize >= threshold { batch_results.push(((current_start + i as i64) as i32, scores[i] as usize)); }
+            if scores[i] as usize >= threshold { batch_results.push(((current_start as i64 + i as i64) as i32, scores[i] as usize)); }
         }
         
         progress.fetch_add(diff, Ordering::Relaxed);
@@ -641,5 +628,6 @@ async fn run_dma_pipeline(seed_counter: Arc<AtomicI64>, end: i32, threshold: usi
     }).collect();
     
     let _ = stop_tx.send(());
+    all_results.sort_by(|a, b| b.1.cmp(&a.1)); 
     all_results
 }

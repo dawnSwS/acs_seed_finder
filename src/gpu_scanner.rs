@@ -1,79 +1,53 @@
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
 pub fn scan_seeds_amd_gpu(
+    start: i32,
+    end: i32,
+    map_size: i32,
+    threshold: usize,
+    progress: Arc<AtomicUsize>,
+) -> Vec<(i32, usize)> {
+    pollster::block_on(run_wgpu_compute_architecture(start, end, map_size, threshold, progress))
+}
+async fn run_wgpu_compute_architecture(
     start: i32,
     end: i32,
     _map_size: i32,
     threshold: usize,
     progress: Arc<AtomicUsize>,
 ) -> Vec<(i32, usize)> {
-    let seed_counter = Arc::new(AtomicI64::new(start as i64));
-    pollster::block_on(run_wgpu_compute_architecture_dynamic(seed_counter, end, threshold, progress))
-}
-
-pub fn run_pure_gpu_dynamic(
-    current_seed: Arc<AtomicI64>,
-    end: i32,
-    threshold: usize,
-    progress: Arc<AtomicUsize>,
-) -> Vec<(i32, usize)> {
-    pollster::block_on(run_wgpu_compute_architecture_dynamic(current_seed, end, threshold, progress))
-}
-
-async fn run_wgpu_compute_architecture_dynamic(
-    current_seed: Arc<AtomicI64>,
-    end: i32,
-    threshold: usize,
-    progress: Arc<AtomicUsize>,
-) -> Vec<(i32, usize)> {
     let mut results_vec = Vec::new();
-    
-    if current_seed.load(Ordering::Relaxed) > end as i64 {
-        return results_vec;
-    }
-
+    let diff = (end as i64 - start as i64 + 1).max(0) as u32; 
+    if diff == 0 { return results_vec; }
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let adapter_opt = instance.request_adapter(&wgpu::RequestAdapterOptions { 
+    let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { 
         power_preference: wgpu::PowerPreference::HighPerformance, 
         ..Default::default() 
-    }).await;
-    
-    let adapter = match adapter_opt {
-        Ok(a) => a,
-        Err(_) => return results_vec,
-    };
+    }).await.expect("驱动拒绝拉起计算池");
     
     let actual_limits = adapter.limits();
     let safe_limits = actual_limits.clone();
     
-    let (device, queue) = match adapter.request_device(&wgpu::DeviceDescriptor { 
+    let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor { 
         label: None, 
         required_features: wgpu::Features::empty(), 
         required_limits: safe_limits,
         ..Default::default()
-    }).await {
-        Ok(dq) => dq,
-        Err(_) => return results_vec,
-    };
+    }).await.expect("设备生成失败");
     
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { 
         label: None, 
         source: wgpu::ShaderSource::Wgsl(WGSL_SHADER.into()) 
     });
-    
     let bytes_per_task = 20 * 1152 * 4; 
-    let diff = (end as i64 - current_seed.load(Ordering::Relaxed) + 1).max(0) as u32;
-    let mut chunk_size = (actual_limits.max_storage_buffer_binding_size as u64 / bytes_per_task).min(30000).min(diff as u64) as u32;
-    chunk_size = (chunk_size & !127).max(128);
-    
+    let mut chunk_size = (actual_limits.max_storage_buffer_binding_size as u64 / bytes_per_task).min(40000).min(diff as u64) as u32;
+    chunk_size = (chunk_size & !127).max(1);
     let grids_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (chunk_size as u64) * bytes_per_task, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
     let mine_dirs_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (chunk_size as u64) * 2048 * 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
     let mine_dir_counts_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (chunk_size as u64) * 4, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
     let result_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (chunk_size as u64) * 4, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
     let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (chunk_size as u64) * 4, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
     let config_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-    
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None, entries: &[
             wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::COMPUTE, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }, count: None },
@@ -106,13 +80,8 @@ async fn run_wgpu_compute_architecture_dynamic(
         cache: None,
         compilation_options: Default::default(),
     });
-    
-    loop {
-        let current_start = current_seed.fetch_add(chunk_size as i64, Ordering::Relaxed);
-        if current_start > end as i64 {
-            break;
-        }
-        
+    let mut current_start = start as i64;
+    while current_start <= end as i64 {
         let current_diff = ((end as i64 - current_start + 1) as u64).min(chunk_size as u64) as u32;
         queue.write_buffer(&config_buffer, 0, bytemuck::cast_slice(&[current_start as i32, current_diff as i32, chunk_size as i32, threshold as i32]));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -124,7 +93,6 @@ async fn run_wgpu_compute_architecture_dynamic(
         }
         encoder.copy_buffer_to_buffer(&result_buffer, 0, &readback_buffer, 0, (current_diff as u64) * 4);
         queue.submit(Some(encoder.finish()));
-        
         let slice = readback_buffer.slice(0..((current_diff as u64) * 4));
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |v| tx.send(v).unwrap());
@@ -136,18 +104,18 @@ async fn run_wgpu_compute_architecture_dynamic(
             let counts: &[u32] = bytemuck::cast_slice(&data);
             for i in 0..current_diff { 
                 if counts[i as usize] as usize >= threshold { 
-                    results_vec.push(((current_start + i as i64) as i32, counts[i as usize] as usize)); 
+                    results_vec.push((current_start as i32 + i as i32, counts[i as usize] as usize)); 
                 } 
             }
             progress.fetch_add(current_diff as usize, Ordering::Relaxed);
             drop(data); 
             readback_buffer.unmap();
         }
+        current_start += current_diff as i64;
     }
     results_vec.sort_by(|a, b| b.1.cmp(&a.1)); 
     results_vec
 }
-
 const WGSL_SHADER: &str = r#"
 struct Config { start_seed: i32, total_tasks: u32, chunk_size: u32, threshold: u32 }
 @group(0) @binding(0) var<uniform> config: Config;
