@@ -266,7 +266,7 @@ impl MapMaker {
                     let (dx, dy) = base_around_50[i];
                     let nx = cx + dx; let ny = cy + dy;
                     if nx >= 0 && nx < self.width && ny >= 0 && ny < self.height {
-                        if nx == 0 && ny == 0 { continue; }
+                        // 【已修复】：去除了错误的 if nx == 0 && ny == 0 { continue; } 保护机制，使得 (0, 0) 同步抽取 rng 随机数
                         if self.rand.random_range_int(0, 100, RandomType::EmNone, "OutLine") > lv { continue; }
                         let nw = (ny as usize) * stride + (nx as usize) / 32;
                         let n_bit = 1u32 << ((nx as u32) % 32);
@@ -274,7 +274,8 @@ impl MapMaker {
                         if (cmask & n_bit) != 0 {
                             self.set_mask(target_u, nw, n_bit);
                             current_max -= 1;
-                            if current_max == 0 { return; } 
+                            // 【已修复】：原来错误的 return 强行终止退出被修正为跳出周围的 50 个格探测，继续迭代列表
+                            if current_max == 0 { break; } 
                         }
                     }
                 }
@@ -389,19 +390,19 @@ impl MapMaker {
         for _ in 0..ecount {
             if flag {
                 for w in 0..total_words {
-                    let mut mask = self.bb[def_u][w];
-                    while mask != 0 {
-                        let b = mask.trailing_zeros(); mask ^= 1u32 << b;
-                        let cx = (w % stride * 32 + b as usize) as i32;
-                        if cx < self.width {
-                            let key = ((w / stride) as i32) * self.width + cx;
-                            if self.rand.random_range_int(0, 100, RandomType::EmNone, "MakeMap") <= expand_lv {
-                                let mut n_keys = [0i32; 8];
-                                for d in 0..self.get_cpu_neighbor(key, &mut n_keys) {
-                                    let nx = (n_keys[d] % self.width) as usize; let ny = (n_keys[d] / self.width) as usize;
-                                    let nw = ny * stride + nx / 32; let n_bit = 1u32 << ((nx as u32) % 32);
-                                    let cmask = self.get_ctype_mask(nw, ectype);
-                                    if (cmask & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
+                    for b in 0..32 {
+                        if (self.bb[def_u][w] & (1u32 << b)) != 0 {
+                            let cx = (w % stride * 32 + b) as i32;
+                            if cx < self.width {
+                                let key = ((w / stride) as i32) * self.width + cx as i32;
+                                if self.rand.random_range_int(0, 100, RandomType::EmNone, "MakeMap") <= expand_lv {
+                                    let mut n_keys = [0i32; 8];
+                                    for d in 0..self.get_cpu_neighbor(key, &mut n_keys) {
+                                        let nx = (n_keys[d] % self.width) as usize; let ny = (n_keys[d] / self.width) as usize;
+                                        let nw = ny * stride + nx / 32; let n_bit = 1u32 << ((nx as u32) % 32);
+                                        let cmask = self.get_ctype_mask(nw, ectype);
+                                        if (cmask & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
+                                    }
                                 }
                             }
                         }
@@ -409,19 +410,19 @@ impl MapMaker {
                 }
             } else {
                 for w in (0..total_words).rev() {
-                    let mut mask = self.bb[def_u][w];
-                    while mask != 0 {
-                        let b = 31 - mask.leading_zeros(); mask ^= 1u32 << b;
-                        let cx = (w % stride * 32 + b as usize) as i32;
-                        if cx < self.width {
-                            let key = ((w / stride) as i32) * self.width + cx;
-                            if self.rand.random_range_int(0, 100, RandomType::EmNone, "MakeMap") <= expand_lv {
-                                let mut n_keys = [0i32; 8];
-                                for d in 0..self.get_cpu_neighbor(key, &mut n_keys) {
-                                    let nx = (n_keys[d] % self.width) as usize; let ny = (n_keys[d] / self.width) as usize;
-                                    let nw = ny * stride + nx / 32; let n_bit = 1u32 << ((nx as u32) % 32);
-                                    let cmask = self.get_ctype_mask(nw, ectype);
-                                    if (cmask & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
+                    for b in (0..32).rev() {
+                        if (self.bb[def_u][w] & (1u32 << b)) != 0 {
+                            let cx = (w % stride * 32 + b) as i32;
+                            if cx < self.width {
+                                let key = ((w / stride) as i32) * self.width + cx as i32;
+                                if self.rand.random_range_int(0, 100, RandomType::EmNone, "MakeMap") <= expand_lv {
+                                    let mut n_keys = [0i32; 8];
+                                    for d in 0..self.get_cpu_neighbor(key, &mut n_keys) {
+                                        let nx = (n_keys[d] % self.width) as usize; let ny = (n_keys[d] / self.width) as usize;
+                                        let nw = ny * stride + nx / 32; let n_bit = 1u32 << ((nx as u32) % 32);
+                                        let cmask = self.get_ctype_mask(nw, ectype);
+                                        if (cmask & n_bit) != 0 { self.set_mask(def_u, nw, n_bit); }
+                                    }
                                 }
                             }
                         }
@@ -523,7 +524,8 @@ impl MapMaker {
                     let k_u = k as usize;
                     let w_u = self.width as usize;
                     let nw = (k_u / w_u) * stride + (k_u % w_u) / 32;
-                    self.bb[17][nw] |= 1u32 << ((k_u as u32) % 32);
+                    // 【已修复】：k_u 作为一维坐标，在宽度不为32倍数时按位元分配位置应先降维获得实际 X 坐标
+                    self.bb[17][nw] |= 1u32 << (((k_u % w_u) as u32) % 32);
                 } j += 1;
             }
         }
