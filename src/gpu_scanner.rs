@@ -40,8 +40,8 @@ async fn run_wgpu_compute_architecture_dynamic(
     }).await;
     
     let adapter = match adapter_opt {
-        Some(a) => a,
-        None => return results_vec,
+        Ok(a) => a,
+        Err(_) => return results_vec,
     };
     
     let actual_limits = adapter.limits();
@@ -147,6 +147,7 @@ async fn run_wgpu_compute_architecture_dynamic(
     results_vec.sort_by(|a, b| b.1.cmp(&a.1)); 
     results_vec
 }
+
 const WGSL_SHADER: &str = r#"
 struct Config { start_seed: i32, total_tasks: u32, chunk_size: u32, threshold: u32 }
 @group(0) @binding(0) var<uniform> config: Config;
