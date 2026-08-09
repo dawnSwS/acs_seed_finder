@@ -1,0 +1,16 @@
+[package]
+name = "acs_app"
+version = "0.1.0"
+edition = "2021"
+default-run = "acs_seed_finder"
+
+[dependencies]
+acs_core = { path = "../acs_core" }
+acs_npc = { path = "../acs_npc" }
+acs_scanners = { path = "../acs_scanners" }
+eframe.workspace = true
+rfd.workspace = true
+
+[[bin]]
+name = "acs_seed_finder"
+path = "src/main.rs"

@@ -1,0 +1,10 @@
+[package]
+name = "pack_data"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+acs_npc = { path = "../acs_npc" }
+serde.workspace = true
+bincode.workspace = true
+flate2.workspace = true

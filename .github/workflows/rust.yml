@@ -1,0 +1,24 @@
+name: Rust CI
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        profile: [release, debug]
+        include:
+          - profile: release
+            cargo_args: "--release"
+            target_dir: "release"
+          - profile: debug
+            cargo_args: ""
+            target_dir: "debug"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+    - name: Build ${{ matrix.profile }}
+      run: cargo build ${{ matrix.cargo_args }} 
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with: 
+        name: acs_seed_finder-windows-${{ matrix.profile }}-exe
+        path: target/${{ matrix.target_dir }}/acs_seed_finder.exe

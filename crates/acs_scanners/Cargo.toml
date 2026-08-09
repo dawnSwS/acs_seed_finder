@@ -1,0 +1,11 @@
+[package]
+name = "acs_scanners"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+acs_core = { path = "../acs_core" }
+wgpu.workspace = true
+pollster.workspace = true
+bytemuck.workspace = true
+rayon.workspace = true
