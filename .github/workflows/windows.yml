@@ -1,0 +1,59 @@
+name: Build Windows GUI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-gui-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_TARGET: x86_64-pc-windows-msvc
+      # Link the MSVC C runtime statically; keep CPU instruction selection portable.
+      RUSTFLAGS: -C target-feature=+crt-static
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.RUST_TARGET }}
+
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-2022-${{ env.RUST_TARGET }}-release
+
+      - name: Build the Windows GUI with GPU support
+        run: cargo build --release --all-features --bin acs_seed_finder --target $env:RUST_TARGET
+
+      - name: Assemble the downloadable application
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "target/$env:RUST_TARGET/release/acs_seed_finder.exe" "dist/acs_seed_finder.exe"
+          Copy-Item "assets/fonts/OFL.txt" "dist/FONT_LICENSE.txt"
+
+      - name: Upload the Windows application
+        uses: actions/upload-artifact@v7
+        with:
+          name: acs-seed-finder-windows-x64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
